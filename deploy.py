@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 完整部署流程：监控 → 生成页面 → GitHub API 上传
-国内服务器 git push 超时，改用 REST API
+优化版：只上传新增文章，跳过已存在的
 """
 import subprocess
 import requests
@@ -12,6 +12,10 @@ import re
 import sys
 from datetime import datetime
 import time
+import functools
+
+# Force unbuffered output
+print = functools.partial(print, flush=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GITHUB_REPO = "heiimzy/gongkao-monitor"
@@ -30,36 +34,45 @@ def upload_file(token, rel_path, content, message):
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
     }
-
-    # Check if file exists
-    resp = requests.get(f"{GITHUB_API}/contents/{rel_path}", headers=headers)
+    resp = requests.get(f"{GITHUB_API}/contents/{rel_path}", headers=headers, timeout=10)
     sha = resp.json().get("sha") if resp.status_code == 200 else None
-
     body = {
         "message": message,
         "content": base64.b64encode(content).decode(),
     }
     if sha:
         body["sha"] = sha
-
-    resp = requests.put(f"{GITHUB_API}/contents/{rel_path}", headers=headers, json=body)
+    resp = requests.put(f"{GITHUB_API}/contents/{rel_path}", headers=headers, json=body, timeout=15)
     return resp.status_code in [200, 201]
+
+
+def get_github_articles(token):
+    """Get list of article files already on GitHub"""
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    resp = requests.get(f"{GITHUB_API}/contents/articles", headers=headers, timeout=15)
+    if resp.status_code == 200:
+        return {item["name"] for item in resp.json() if item["name"].endswith(".html")}
+    return set()
 
 
 def main():
     # Step 1: Run monitor
-    print("📡 Step 1: 运行公告监控...")
+    print("Step 1: Running monitor...")
     result = subprocess.run(
         [sys.executable, os.path.join(BASE_DIR, "gongkao_monitor.py")],
         capture_output=True, text=True, timeout=120
     )
     monitor_output = result.stdout.strip()
-    has_new = bool(monitor_output)
     if monitor_output:
         print(monitor_output)
+    else:
+        print("  No new announcements")
 
     # Step 2: Build site
-    print("\n🔨 Step 2: 生成页面...")
+    print("\nStep 2: Building site...")
     result = subprocess.run(
         [sys.executable, os.path.join(BASE_DIR, "build_site.py")],
         capture_output=True, text=True, timeout=30
@@ -67,50 +80,56 @@ def main():
     print(result.stdout.strip())
 
     # Step 3: Upload to GitHub
-    print("\n🚀 Step 3: 上传到 GitHub Pages...")
+    print("\nStep 3: Uploading to GitHub...")
     token = load_token()
     if not token:
-        print("❌ No GitHub token found")
+        print("ERROR: No GitHub token found")
         return
 
-    files_to_upload = [
-        "index.html",
-        "rss.xml",
-        "README.md",
-        "gongkao_monitor.py",
-        "build_site.py",
-        "deploy.py",
-        "data/announcements.json",
-    ]
-
-    # Also upload all article pages
-    articles_dir = os.path.join(BASE_DIR, "articles")
-    if os.path.isdir(articles_dir):
-        for fname in sorted(os.listdir(articles_dir)):
-            if fname.endswith(".html"):
-                files_to_upload.append(f"articles/{fname}")
-
+    # Upload core files (always)
+    core_files = ["index.html", "rss.xml", "data/announcements.json"]
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    all_ok = True
+    ok = fail = 0
 
-    for rel_path in files_to_upload:
+    for rel_path in core_files:
         full_path = os.path.join(BASE_DIR, rel_path)
         if not os.path.exists(full_path):
             continue
         with open(full_path, "rb") as f:
             content = f.read()
-        ok = upload_file(token, rel_path, content, f"auto-update: {timestamp}")
-        status = "✅" if ok else "❌"
-        print(f"  {status} {rel_path}")
-        if not ok:
-            all_ok = False
-        time.sleep(0.3)  # Rate limit friendly
+        if upload_file(token, rel_path, content, f"auto: {timestamp}"):
+            ok += 1
+            print(f"  OK {rel_path}")
+        else:
+            fail += 1
+            print(f"  FAIL {rel_path}")
+        time.sleep(0.3)
 
-    if all_ok:
-        print(f"\n✅ 公考页面已更新")
-        print(f"🔗 https://heiimzy.github.io/gongkao-monitor/")
-    else:
-        print("\n⚠️ 部分文件上传失败")
+    # Upload articles (only new ones)
+    articles_dir = os.path.join(BASE_DIR, "articles")
+    if os.path.isdir(articles_dir):
+        local_articles = {f for f in os.listdir(articles_dir) if f.endswith(".html")}
+        github_articles = get_github_articles(token)
+        new_articles = local_articles - github_articles
+
+        if new_articles:
+            print(f"  Uploading {len(new_articles)} new articles...")
+            for fname in sorted(new_articles):
+                full_path = os.path.join(articles_dir, fname)
+                with open(full_path, "rb") as f:
+                    content = f.read()
+                if upload_file(token, f"articles/{fname}", content, f"new: {fname[:12]}"):
+                    ok += 1
+                else:
+                    fail += 1
+                    print(f"  FAIL articles/{fname}")
+                time.sleep(0.3)
+        else:
+            print(f"  No new articles (all {len(local_articles)} already on GitHub)")
+
+    print(f"\nDone: {ok} ok, {fail} fail")
+    if fail == 0:
+        print(f"Site updated: https://heiimzy.github.io/gongkao-monitor/")
 
 
 if __name__ == "__main__":

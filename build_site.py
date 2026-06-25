@@ -7,6 +7,7 @@
 import json, os, re, hashlib
 from datetime import datetime
 from collections import defaultdict
+from xml.sax.saxutils import escape as xml_escape
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -112,6 +113,7 @@ def article_page(a, all_articles):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{a.get("title","")} - 公考信息监控</title>
+<link rel="alternate" type="application/rss+xml" title="RSS" href="../rss.xml">
 <style>
 :root{{--bg:#0f1419;--bg2:#1a1f2e;--card:#1e2538;--content:#161b26;--t1:#e8eaed;--t2:#8b95a5;--tm:#5f6b7a;--bd:#2a3040;--ac:#4a9eff}}
 *{{margin:0;padding:0;box-sizing:border-box}}
@@ -146,6 +148,7 @@ a{{color:var(--ac);text-decoration:none}}a:hover{{text-decoration:underline}}
 <span class="badge" style="background:{tc}">{t}</span>
 <span>📅 抓取于 {a.get("date_found","")[:10]}</span>
 {f'<span>📰 发布于 {a["date_pub"]}</span>' if a.get("date_pub") else ""}
+<a href="../rss.xml" target="_blank" rel="noopener">📡 RSS</a>
 <a href="{a.get("url","#")}" target="_blank" rel="noopener">原文链接 ↗</a>
 </div>
 </div>
@@ -227,6 +230,7 @@ def index_page(articles, page, total_pages, last_update):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>公考信息监控 | 自动更新</title>
+<link rel="alternate" type="application/rss+xml" title="RSS" href="rss.xml">
 <style>
 :root{{--bg:#0f1419;--bg2:#1a1f2e;--card:#1e2538;--t1:#e8eaed;--t2:#8b95a5;--tm:#5f6b7a;--bd:#2a3040;--ac:#4a9eff;--glow:rgba(74,158,255,.15)}}
 *{{margin:0;padding:0;box-sizing:border-box}}
@@ -270,7 +274,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHe
 <div class="ctn">
 <div class="hdr">
 <h1>🏛️ 公考信息监控</h1>
-<p class="sub">自动追踪中公教育、华图教育等平台的公务员考试公告</p>
+<p class="sub">所有信息皆从公开渠道获取 <a href="rss.xml" target="_blank" style="background:#f26522;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;text-decoration:none;margin-left:6px;vertical-align:middle">📡 RSS 订阅</a></p>
 <p class="upd">最后更新：{last_update} | 每2小时自动更新</p>
 </div>
 <div class="stats">
@@ -295,8 +299,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHe
 <div id="list">{cards}</div>
 {pager}
 <div class="ft">
-<p>数据来源：<a href="https://www.offcn.com/gwy/" target="_blank">中公教育</a> · <a href="https://www.huatu.com/gwy/" target="_blank">华图教育</a></p>
-<p style="margin-top:4px">由 Hermes Agent 自动监控更新 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
+<p>由 Hermes Agent 自动监控更新 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
 </div>
 </div>
 <script>
@@ -337,12 +340,74 @@ def main():
         with open(os.path.join(ARTICLES_DIR, f'{a["hash"]}.html'), "w", encoding="utf-8") as f:
             f.write(ahtml)
     
+    # Generate RSS feed
+    rss_path = generate_rss(articles, last_update)
+    
     print(f"✅ 生成完成:")
+    rss_size = os.path.getsize(os.path.join(BASE_DIR, "rss.xml"))
+    print(f"   rss.xml ({rss_size:,} bytes)")
     print(f"   index.html ({os.path.getsize(os.path.join(BASE_DIR, 'index.html')):,} bytes)")
     print(f"   articles/ ({len(articles)} 篇)")
     print(f"   总公告: {total}, 分页: {total_pages} 页")
     print(f"   最后更新: {last_update}")
 
+
+
+
+
+def generate_rss(articles, last_update):
+    """Generate RSS 2.0 XML feed"""
+    SITE_URL = "https://heiimzy.github.io/gongkao-monitor"
+    RSS_URL = SITE_URL + "/rss.xml"
+
+    items = []
+    for a in articles:
+        title = xml_escape(a.get("title", ""))
+        link = SITE_URL + "/articles/" + a["hash"] + ".html"
+        source = xml_escape(a.get("source", ""))
+        date_pub = a.get("date_pub", "")
+        desc = xml_escape(a.get("content", "")[:500])
+
+        pub_date = ""
+        if date_pub:
+            try:
+                dt = datetime.strptime(date_pub, "%Y-%m-%d")
+                pub_date = dt.strftime("%a, %d %b %Y 00:00:00 +0800")
+            except Exception:
+                pass
+
+        item_lines = [
+            "    <item>",
+            "      <title>" + title + "</title>",
+            "      <link>" + link + "</link>",
+            '      <guid isPermaLink="true">' + link + "</guid>",
+            "      <category>" + source + "</category>",
+            "      <description>" + desc + "</description>",
+        ]
+        if pub_date:
+            item_lines.append("      <pubDate>" + pub_date + "</pubDate>")
+        item_lines.append("    </item>")
+        items.append("\n".join(item_lines))
+
+    rss_lines = [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\">",
+        "  <channel>",
+        "    <title>公考信息监控</title>",
+        "    <link>" + SITE_URL + "</link>",
+        "    <description>自动更新的公务员考试公告信息</description>",
+        "    <language>zh-cn</language>",
+        "    <lastBuildDate>" + last_update + "</lastBuildDate>",
+        '    <atom:link href="' + RSS_URL + '" rel="self" type="application/rss+xml"/>',
+    ]
+    rss_lines.extend(items)
+    rss_lines.append("  </channel>")
+    rss_lines.append("</rss>")
+
+    rss_path = os.path.join(BASE_DIR, "rss.xml")
+    with open(rss_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(rss_lines))
+    return rss_path
 
 if __name__ == "__main__":
     main()

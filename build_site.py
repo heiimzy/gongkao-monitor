@@ -1,44 +1,38 @@
 #!/usr/bin/env python3
 """
-从 announcements.json 生成 GitHub Pages 静态页面 v3
-- 去重（按 URL 去重）
-- 分页加载（每页 20 条）
-- 类型筛选（公告/公示/招考/其他）
-- 内容直接展示
+站点生成器 v4
+- index.html: 分页列表页
+- articles/{hash}.html: 文章独立页面
 """
-import json
-import os
-import re
+import json, os, re, hashlib
 from datetime import datetime
 from collections import defaultdict
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-ANNOUNCEMENTS_FILE = os.path.join(DATA_DIR, "announcements.json")
-OUTPUT_FILE = os.path.join(BASE_DIR, "index.html")
+ARTICLES_DIR = os.path.join(BASE_DIR, "articles")
+ANN_FILE = os.path.join(DATA_DIR, "announcements.json")
+
+PAGE_SIZE = 20
 
 
-def load_announcements():
-    if os.path.exists(ANNOUNCEMENTS_FILE):
-        with open(ANNOUNCEMENTS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"announcements": [], "last_update": "", "total": 0}
+def load_data():
+    with open(ANN_FILE) as f:
+        return json.load(f)
 
 
 def deduplicate(announcements):
-    """按 URL 去重，保留第一个（通常是国考来源）"""
-    seen_urls = set()
-    deduped = []
+    seen = set()
+    result = []
     for a in announcements:
         url = a.get("url", "")
-        if url not in seen_urls:
-            seen_urls.add(url)
-            deduped.append(a)
-    return deduped
+        if url not in seen:
+            seen.add(url)
+            result.append(a)
+    return result
 
 
-def classify_announcement(title):
-    """根据标题分类公告类型"""
+def classify(title):
     if "公示" in title or "拟录用" in title:
         return "公示"
     elif "公告" in title:
@@ -53,155 +47,223 @@ def classify_announcement(title):
         return "笔试"
     elif "职位" in title:
         return "职位"
-    else:
-        return "其他"
+    return "其他"
 
 
 def type_color(t):
-    return {
-        "公告": "#e74c3c",
-        "公示": "#f39c12",
-        "招考": "#3498db",
-        "报名": "#2ecc71",
-        "面试": "#9b59b6",
-        "笔试": "#1abc9c",
-        "职位": "#e67e22",
-        "其他": "#95a5a6",
-    }.get(t, "#95a5a6")
+    return {"公告":"#e74c3c","公示":"#f39c12","招考":"#3498db","报名":"#2ecc71",
+            "面试":"#9b59b6","笔试":"#1abc9c","职位":"#e67e22","其他":"#95a5a6"}.get(t,"#95a5a6")
 
 
-def source_color(source):
-    return {"国考": "#e74c3c", "省考": "#3498db", "华图": "#2ecc71"}.get(source, "#95a5a6")
+def source_color(s):
+    return {"国考":"#e74c3c","省考":"#3498db","华图":"#2ecc71"}.get(s,"#95a5a6")
 
 
-def format_content(content):
+def format_article_content(content):
     if not content:
-        return '<p class="no-content">暂无详细内容，点击原文链接查看</p>'
+        return "<p>暂无详细内容</p>"
     content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    paragraphs = content.split("\n")
-    html_parts = []
-    for p in paragraphs:
-        p = p.strip()
-        if not p:
+    lines = content.split("\n")
+    html = []
+    for line in lines:
+        line = line.strip()
+        if not line:
             continue
-        if len(p) < 50 and re.match(r'^[一二三四五六七八九十]+[、．.]', p):
-            html_parts.append(f'<h4>{p}</h4>')
-        elif re.match(r'^[（(][一二三四五六七八九十]+[）)]', p):
-            html_parts.append(f'<p class="sub-item">{p}</p>')
+        if len(line) < 50 and re.match(r'^[一二三四五六七八九十]+[、．.]', line):
+            html.append(f"<h3>{line}</h3>")
+        elif re.match(r'^[（(][一二三四五六七八九十]+[）)]', line):
+            html.append(f'<p class="sub-item">{line}</p>')
+        elif re.match(r'^\d+[.、]', line):
+            html.append(f'<p class="list-item">{line}</p>')
         else:
-            html_parts.append(f'<p>{p}</p>')
-    return "\n".join(html_parts) if html_parts else '<p class="no-content">暂无详细内容</p>'
+            html.append(f"<p>{line}</p>")
+    return "\n".join(html) if html else "<p>暂无详细内容</p>"
 
 
-def generate_html(data):
-    # Deduplicate
-    announcements = deduplicate(data.get("announcements", []))
-    last_update = data.get("last_update", "")
-    total = len(announcements)
+# ─── Article page template ───
+
+def article_page(a, all_articles):
+    """生成单篇文章页面"""
+    content_html = format_article_content(a.get("content", ""))
+    t = a.get("type", "其他")
+    tc = type_color(t)
+    sc = source_color(a.get("source", ""))
     
-    # Classify
-    for a in announcements:
-        a["type"] = classify_announcement(a.get("title", ""))
+    # Prev/Next navigation
+    idx = next((i for i, x in enumerate(all_articles) if x["hash"] == a["hash"]), 0)
+    prev_a = all_articles[idx + 1] if idx + 1 < len(all_articles) else None
+    next_a = all_articles[idx - 1] if idx - 1 >= 0 else None
     
+    nav = '<div class="nav-row">'
+    if prev_a:
+        nav += f'<a href="{prev_a["hash"]}.html" class="nav-btn">‹ {prev_a["title"][:30]}</a>'
+    else:
+        nav += '<span class="nav-btn disabled">‹ 上一篇</span>'
+    nav += f'<a href="../index.html" class="nav-btn">📋 目录</a>'
+    if next_a:
+        nav += f'<a href="{next_a["hash"]}.html" class="nav-btn">{next_a["title"][:30]} ›</a>'
+    else:
+        nav += '<span class="nav-btn disabled">下一篇 ›</span>'
+    nav += '</div>'
+    
+    return f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{a.get("title","")} - 公考信息监控</title>
+<style>
+:root{{--bg:#0f1419;--bg2:#1a1f2e;--card:#1e2538;--content:#161b26;--t1:#e8eaed;--t2:#8b95a5;--tm:#5f6b7a;--bd:#2a3040;--ac:#4a9eff}}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--t1);line-height:1.8}}
+.w{{max-width:800px;margin:0 auto;padding:20px}}
+a{{color:var(--ac);text-decoration:none}}a:hover{{text-decoration:underline}}
+.back{{display:inline-block;margin-bottom:20px;font-size:14px;color:var(--ac)}}
+.hdr{{margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid var(--bd)}}
+.hdr h1{{font-size:24px;font-weight:700;margin-bottom:12px;line-height:1.4}}
+.meta{{display:flex;gap:12px;font-size:13px;color:var(--tm);flex-wrap:wrap;align-items:center}}
+.badge{{font-size:11px;font-weight:600;color:#fff;padding:2px 8px;border-radius:10px}}
+.article-body{{background:var(--card);border-radius:12px;padding:24px 28px;font-size:15px;line-height:1.9;color:var(--t2)}}
+.article-body h3{{color:var(--t1);font-size:17px;font-weight:600;margin:20px 0 8px}}
+.article-body p{{margin-bottom:10px}}
+.article-body p.sub-item{{padding-left:20px}}
+.article-body p.list-item{{padding-left:8px;border-left:2px solid var(--ac);margin-left:4px}}
+.nav-row{{display:flex;justify-content:space-between;gap:8px;margin-top:24px;flex-wrap:wrap}}
+.nav-btn{{background:var(--card);border:1px solid var(--bd);color:var(--t2);padding:8px 16px;border-radius:8px;font-size:13px;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}}
+.nav-btn:hover{{border-color:var(--ac);color:var(--ac);text-decoration:none}}
+.nav-btn.disabled{{opacity:.3;cursor:default}}
+.ft{{text-align:center;padding:30px 0;color:var(--tm);font-size:12px;border-top:1px solid var(--bd);margin-top:30px}}
+@media(max-width:600px){{.w{{padding:14px}}.hdr h1{{font-size:20px}}.article-body{{padding:16px;font-size:14px}}}}
+</style>
+</head>
+<body>
+<div class="w">
+<a href="../index.html" class="back">← 返回目录</a>
+<div class="hdr">
+<h1>{a.get("title","")}</h1>
+<div class="meta">
+<span class="badge" style="background:{sc}">{a.get("source","")}</span>
+<span class="badge" style="background:{tc}">{t}</span>
+<span>📅 抓取于 {a.get("date_found","")[:10]}</span>
+{f'<span>📰 发布于 {a["date_pub"]}</span>' if a.get("date_pub") else ""}
+<a href="{a.get("url","#")}" target="_blank" rel="noopener">原文链接 ↗</a>
+</div>
+</div>
+<div class="article-body">{content_html}</div>
+{nav}
+<div class="ft">由 Hermes Agent 自动监控更新 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
+</div>
+</body>
+</html>'''
+
+
+# ─── Index page template ───
+
+def index_page(articles, page, total_pages, last_update):
+    """生成列表页"""
+    start = (page - 1) * PAGE_SIZE
+    page_items = articles[start:start + PAGE_SIZE]
+    
+    # Stats
     by_source = defaultdict(int)
     by_type = defaultdict(int)
-    for a in announcements:
-        by_source[a.get("source", "未知")] += 1
-        by_type[a["type"]] += 1
+    for a in articles:
+        by_source[a.get("source", "?")] += 1
+        by_type[a.get("type", "其他")] += 1
     
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    # Stats
-    source_cards = ""
-    for src, count in sorted(by_source.items(), key=lambda x: -x[1]):
-        color = source_color(src)
-        source_cards += f'<div class="stat-card" style="border-left: 4px solid {color}"><div class="stat-number">{count}</div><div class="stat-label">{src}</div></div>'
+    source_cards = "".join(
+        f'<div class="st" style="border-left:4px solid {source_color(s)}"><div class="n">{c}</div><div class="l">{s}</div></div>'
+        for s, c in sorted(by_source.items(), key=lambda x: -x[1])
+    )
+    type_cards = "".join(
+        f'<div class="st" style="border-left:4px solid {type_color(t)}"><div class="n">{c}</div><div class="l">{t}</div></div>'
+        for t, c in sorted(by_type.items(), key=lambda x: -x[1])
+    )
     
-    type_cards = ""
-    for t, count in sorted(by_type.items(), key=lambda x: -x[1]):
-        color = type_color(t)
-        type_cards += f'<div class="stat-card" style="border-left: 4px solid {color}"><div class="stat-number">{count}</div><div class="stat-label">{t}</div></div>'
-
-    # Announcement cards (all, with data attributes for filtering)
-    all_cards = ""
-    for a in announcements:
-        color = source_color(a.get("source", ""))
+    # Cards
+    cards = ""
+    for a in page_items:
+        sc = source_color(a.get("source", ""))
         t = a.get("type", "其他")
         tc = type_color(t)
-        content_html = format_content(a.get("content", ""))
-        cid = f"c-{a['hash']}"
-        has_content = bool(a.get("content") and len(a["content"]) > 50)
-        
-        all_cards += f'''<div class="announcement-card" data-source="{a.get("source","")}" data-type="{t}">
-<div class="card-header" onclick="toggle('{cid}')">
-<div class="card-left">
-<span class="source-badge" style="background:{color}">{a.get("source","")}</span>
-<span class="type-badge" style="background:{tc}">{t}</span>
-<span class="card-title">{a.get("title","")}</span>
+        has_content = bool(a.get("content") and len(a["content"]) > 80)
+        cards += f'''<div class="card" data-source="{a.get("source","")}" data-type="{t}">
+<a href="articles/{a["hash"]}.html" class="card-link">
+<div class="ch">
+<div class="cl">
+<span class="sb" style="background:{sc}">{a.get("source","")}</span>
+<span class="tb" style="background:{tc}">{t}</span>
+<span class="ct">{a.get("title","")}</span>
 </div>
-<span class="expand-icon" id="i-{cid}">▼</span>
+<span class="ei">›</span>
 </div>
-<div class="card-meta">
+<div class="cm">
 <span>📅 {a.get("date_found","")[:10]}</span>
 {f'<span>📰 {a["date_pub"]}</span>' if a.get("date_pub") else ""}
-{"<span class='content-tag'>📄 有正文</span>" if has_content else ""}
-<a href="{a.get("url","#")}" target="_blank" rel="noopener" class="original-link">原文 ↗</a>
+{"<span class='ctag'>📄 有正文</span>" if has_content else '<span class="ctag dim">无正文</span>'}
 </div>
-<div class="card-content" id="{cid}" style="display:none">{content_html}</div>
+</a>
 </div>'''
-
-    html = f'''<!DOCTYPE html>
+    
+    # Pagination
+    pager = ""
+    if total_pages > 1:
+        pager = '<div class="pg">'
+        if page > 1:
+            pager += f'<a href="?page={page-1}" class="pb">‹ 上一页</a>'
+        for p in range(1, total_pages + 1):
+            if p == 1 or p == total_pages or abs(p - page) <= 2:
+                cls = "pb on" if p == page else "pb"
+                pager += f'<a href="?page={p}" class="{cls}">{p}</a>'
+            elif pager.endswith('<span class="pb">...</span>') == False:
+                pager += '<span class="pb">...</span>'
+        if page < total_pages:
+            pager += f'<a href="?page={page+1}" class="pb">下一页 ›</a>'
+        pager += '</div>'
+    
+    return f'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>公考信息监控 | 自动更新</title>
 <style>
-:root{{--bg:#0f1419;--bg2:#1a1f2e;--card:#1e2538;--content:#161b26;--t1:#e8eaed;--t2:#8b95a5;--tm:#5f6b7a;--bd:#2a3040;--ac:#4a9eff;--glow:rgba(74,158,255,.15)}}
+:root{{--bg:#0f1419;--bg2:#1a1f2e;--card:#1e2538;--t1:#e8eaed;--t2:#8b95a5;--tm:#5f6b7a;--bd:#2a3040;--ac:#4a9eff;--glow:rgba(74,158,255,.15)}}
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--t1);line-height:1.7}}
 .ctn{{max-width:900px;margin:0 auto;padding:20px}}
 .hdr{{text-align:center;padding:40px 0 30px;border-bottom:1px solid var(--bd);margin-bottom:30px}}
-.hdr h1{{font-size:28px;font-weight:700;margin-bottom:8px;background:linear-gradient(135deg,#4a9eff,#7c5cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}}
-.hdr .sub{{color:var(--t2);font-size:14px}}
-.hdr .upd{{color:var(--tm);font-size:12px;margin-top:8px}}
-.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:24px}}
-.st{{background:var(--card);border-radius:10px;padding:14px;text-align:center}}
-.st .n{{font-size:26px;font-weight:700}}.st .l{{font-size:12px;color:var(--t2);margin-top:2px}}
-.srch{{width:100%;padding:12px 16px;background:var(--card);border:1px solid var(--bd);border-radius:10px;color:var(--t1);font-size:14px;margin-bottom:12px;outline:none}}
+.hdr h1{{font-size:28px;font-weight:700;background:linear-gradient(135deg,#4a9eff,#7c5cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:8px}}
+.hdr .sub{{color:var(--t2);font-size:14px}}.hdr .upd{{color:var(--tm);font-size:12px;margin-top:8px}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:24px}}
+.st{{background:var(--card);border-radius:8px;padding:12px;text-align:center}}
+.st .n{{font-size:22px;font-weight:700}}.st .l{{font-size:11px;color:var(--t2);margin-top:2px}}
+.srch{{width:100%;padding:11px 14px;background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--t1);font-size:14px;margin-bottom:10px;outline:none}}
 .srch:focus{{border-color:var(--ac)}}.srch::placeholder{{color:var(--tm)}}
-.fb{{display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap}}
-.fb button{{background:var(--card);border:1px solid var(--bd);color:var(--t2);padding:5px 14px;border-radius:18px;font-size:12px;cursor:pointer;transition:all .2s}}
-.fb button:hover,.fb button.on{{background:var(--ac);color:#fff;border-color:var(--ac)}}
-.fb .sep{{width:1px;background:var(--bd);margin:0 4px}}
-.card{{background:var(--card);border-radius:10px;margin-bottom:6px;border:1px solid transparent;transition:all .2s}}
-.card:hover{{border-color:var(--ac);box-shadow:0 0 16px var(--glow)}}
+.fb{{display:flex;gap:5px;margin-bottom:16px;flex-wrap:wrap;align-items:center}}
+.fb a{{background:var(--card);border:1px solid var(--bd);color:var(--t2);padding:4px 12px;border-radius:16px;font-size:11px;text-decoration:none;transition:all .2s}}
+.fb a:hover,.fb a.on{{background:var(--ac);color:#fff;border-color:var(--ac)}}
+.fb .sep{{width:1px;height:16px;background:var(--bd);margin:0 2px}}
+.card{{background:var(--card);border-radius:8px;margin-bottom:4px;border:1px solid transparent;transition:all .2s}}
+.card:hover{{border-color:var(--ac);box-shadow:0 0 12px var(--glow)}}
 .card.hide{{display:none}}
-.ch{{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;cursor:pointer;user-select:none}}
-.ch:hover{{background:rgba(74,158,255,.04)}}
-.cl{{display:flex;align-items:center;gap:8px;flex:1;min-width:0}}
-.sb{{font-size:10px;font-weight:600;color:#fff;padding:2px 8px;border-radius:10px;white-space:nowrap}}
-.tb{{font-size:10px;font-weight:500;color:#fff;padding:2px 6px;border-radius:8px;white-space:nowrap}}
-.ct{{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.ei{{color:var(--tm);font-size:11px;transition:transform .2s;flex-shrink:0;margin-left:8px}}
-.ei.op{{transform:rotate(180deg)}}
-.cm{{display:flex;gap:14px;font-size:11px;color:var(--tm);padding:0 16px 10px;align-items:center;flex-wrap:wrap}}
-.ol{{color:var(--ac);text-decoration:none;margin-left:auto}}.ol:hover{{text-decoration:underline}}
-.ctag{{color:#2ecc71;font-size:11px}}
-.cc{{padding:12px 16px;background:var(--content);margin:0 8px 8px;border-radius:8px;font-size:13px;line-height:1.8;color:var(--t2);max-height:400px;overflow-y:auto}}
-.cc h4{{color:var(--t1);font-size:13px;font-weight:600;margin:10px 0 4px}}
-.cc p{{margin-bottom:6px}}.cc p.si{{padding-left:18px}}
-.nc{{color:var(--tm);font-style:italic;text-align:center;padding:16px}}
-.pg{{display:flex;justify-content:center;gap:6px;margin:24px 0;flex-wrap:wrap}}
-.pg button{{background:var(--card);border:1px solid var(--bd);color:var(--t2);padding:6px 12px;border-radius:6px;font-size:13px;cursor:pointer;transition:all .2s}}
-.pg button:hover,.pg button.on{{background:var(--ac);color:#fff;border-color:var(--ac)}}
-.pg button:disabled{{opacity:.4;cursor:default}}
-.ft{{text-align:center;padding:30px 0;border-top:1px solid var(--bd);margin-top:30px;color:var(--tm);font-size:12px}}
+.card-link{{display:block;text-decoration:none;color:inherit}}
+.card-link:hover{{text-decoration:none}}
+.ch{{display:flex;justify-content:space-between;align-items:center;padding:10px 14px}}
+.cl{{display:flex;align-items:center;gap:6px;flex:1;min-width:0}}
+.sb{{font-size:10px;font-weight:600;color:#fff;padding:2px 7px;border-radius:8px;white-space:nowrap}}
+.tb{{font-size:10px;font-weight:500;color:#fff;padding:2px 5px;border-radius:6px;white-space:nowrap}}
+.ct{{font-size:14px;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.ei{{color:var(--tm);font-size:16px;flex-shrink:0;margin-left:6px}}
+.cm{{display:flex;gap:12px;font-size:11px;color:var(--tm);padding:0 14px 8px;flex-wrap:wrap;align-items:center}}
+.ctag{{color:#2ecc71;font-size:11px}}.ctag.dim{{color:var(--tm);font-style:italic}}
+.pg{{display:flex;justify-content:center;gap:4px;margin:20px 0;flex-wrap:wrap}}
+.pb{{background:var(--card);border:1px solid var(--bd);color:var(--t2);padding:5px 10px;border-radius:5px;font-size:12px;text-decoration:none;display:inline-block}}
+.pb:hover,.pb.on{{background:var(--ac);color:#fff;border-color:var(--ac)}}
+.cnt{{text-align:center;color:var(--tm);font-size:12px;margin-bottom:12px}}
+.ft{{text-align:center;padding:24px 0;border-top:1px solid var(--bd);margin-top:24px;color:var(--tm);font-size:12px}}
 .ft a{{color:var(--ac);text-decoration:none}}
-.st{{position:fixed;bottom:24px;right:24px;width:40px;height:40px;background:var(--ac);border:none;border-radius:50%;color:#fff;font-size:18px;cursor:pointer;display:none;align-items:center;justify-content:center;z-index:100;box-shadow:0 4px 12px rgba(74,158,255,.3)}}
-.st.v{{display:flex}}
-.cnt{{text-align:center;color:var(--tm);font-size:13px;margin-bottom:16px}}
-@media(max-width:600px){{.ctn{{padding:12px}}.hdr h1{{font-size:22px}}.stats{{grid-template-columns:repeat(3,1fr)}}.cl{{gap:6px}}.ct{{font-size:13px}}}}
+@media(max-width:600px){{.ctn{{padding:12px}}.hdr h1{{font-size:22px}}.stats{{grid-template-columns:repeat(3,1fr)}}}}
 </style>
 </head>
 <body>
@@ -209,69 +271,77 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHe
 <div class="hdr">
 <h1>🏛️ 公考信息监控</h1>
 <p class="sub">自动追踪中公教育、华图教育等平台的公务员考试公告</p>
-<p class="upd">最后更新：{last_update or now} | 每2小时自动更新 | 已去重</p>
+<p class="upd">最后更新：{last_update} | 每2小时自动更新</p>
 </div>
-
 <div class="stats">
-<div class="st"><div class="n">{total}</div><div class="l">📋 总公告</div></div>
-{source_cards}
-{type_cards}
+<div class="st"><div class="n">{len(articles)}</div><div class="l">📋 总公告</div></div>
+{source_cards}{type_cards}
 </div>
-
-<input type="text" class="srch" id="search" placeholder="🔍 搜索公告标题..." oninput="doFilter()">
-
-<div class="fb" id="filters">
-<button class="on" data-filter="all" onclick="setFilter(this,'all')">全部</button>
+<input type="text" class="srch" id="search" placeholder="🔍 搜索公告标题..." oninput="filterCards()">
+<div class="fb">
+<a href="#" class="on" onclick="return setF(this,'all')">全部</a>
 <div class="sep"></div>
-<button data-filter="source:国考" onclick="setFilter(this,'source:国考')">🔴 国考</button>
-<button data-filter="source:省考" onclick="setFilter(this,'source:省考')">🔵 省考</button>
-<button data-filter="source:华图" onclick="setFilter(this,'source:华图')">🟢 华图</button>
+<a href="#" onclick="return setF(this,'source:国考')">🔴 国考</a>
+<a href="#" onclick="return setF(this,'source:省考')">🔵 省考</a>
+<a href="#" onclick="return setF(this,'source:华图')">🟢 华图</a>
 <div class="sep"></div>
-<button data-filter="type:公告" onclick="setFilter(this,'type:公告')">📢 公告</button>
-<button data-filter="type:公示" onclick="setFilter(this,'type:公示')">📋 公示</button>
-<button data-filter="type:招考" onclick="setFilter(this,'type:招考')">🎯 招考</button>
-<button data-filter="type:面试" onclick="setFilter(this,'type:面试')">🎤 面试</button>
-<button data-filter="type:职位" onclick="setFilter(this,'type:职位')">💼 职位</button>
+<a href="#" onclick="return setF(this,'type:公告')">📢 公告</a>
+<a href="#" onclick="return setF(this,'type:公示')">📋 公示</a>
+<a href="#" onclick="return setF(this,'type:招考')">🎯 招考</a>
+<a href="#" onclick="return setF(this,'type:面试')">🎤 面试</a>
+<a href="#" onclick="return setF(this,'type:职位')">💼 职位</a>
 </div>
-
 <div class="cnt" id="count"></div>
-<div id="list">{all_cards}</div>
-<div class="pg" id="pager"></div>
-
+<div id="list">{cards}</div>
+{pager}
 <div class="ft">
 <p>数据来源：<a href="https://www.offcn.com/gwy/" target="_blank">中公教育</a> · <a href="https://www.huatu.com/gwy/" target="_blank">华图教育</a></p>
-<p style="margin-top:4px">由 Hermes Agent 自动监控更新 · {now}</p>
+<p style="margin-top:4px">由 Hermes Agent 自动监控更新 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
 </div>
 </div>
-<button class="st" id="st" onclick="window.scrollTo({{top:0,behavior:'smooth'}})">↑</button>
 <script>
-const PAGE_SIZE=20;let curPage=1,curFilter='all';
-function toggle(id){{const e=document.getElementById(id),i=document.getElementById('i-'+id);if(e.style.display==='none'){{e.style.display='block';i.classList.add('op')}}else{{e.style.display='none';i.classList.remove('op')}}}}
-function setFilter(btn,f){{document.querySelectorAll('.fb button').forEach(b=>b.classList.remove('on'));btn.classList.add('on');curFilter=f;curPage=1;doFilter()}}
-function doFilter(){{const q=document.getElementById('search').value.toLowerCase();document.querySelectorAll('.card').forEach(c=>{{const src=c.dataset.source,typ=c.dataset.type,tit=c.querySelector('.ct').textContent.toLowerCase();let show=true;if(curFilter!=='all'){{if(curFilter.startsWith('source:'))show=src===curFilter.split(':')[1];else if(curFilter.startsWith('type:'))show=typ===curFilter.split(':')[1]}}if(q&&!tit.includes(q))show=false;c.classList.toggle('hide',!show)}});renderPage()}}
-function renderPage(){{const cards=[...document.querySelectorAll('.card:not(.hide)')];const total=cards.length;const pages=Math.ceil(total/PAGE_SIZE);if(curPage>pages)curPage=pages||1;const start=(curPage-1)*PAGE_SIZE;cards.forEach((c,i)=>{{c.style.display=(i>=start&&i<start+PAGE_SIZE)?'':'none'}});document.getElementById('count').textContent=`显示 ${{start+1}}-${{Math.min(start+PAGE_SIZE,total)}}/${{total}} 条`;let pg='';if(pages>1){{pg+=`<button ${{curPage===1?'disabled':''}} onclick="goPage(${{curPage-1}})">‹</button>`;const range=[];for(let i=1;i<=pages;i++){{if(i===1||i===pages||Math.abs(i-curPage)<=2)range.push(i);else if(range[range.length-1]!=='...')range.push('...')}}range.forEach(p=>{{if(p==='...')pg+=`<button disabled>...</button>`;else pg+=`<button class="${{p===curPage?'on':''}}" onclick="goPage(${{p}})">${{p}}</button>`}});pg+=`<button ${{curPage===pages?'disabled':''}} onclick="goPage(${{curPage+1}})">›</button>`}}document.getElementById('pager').innerHTML=pg}}
-function goPage(p){{curPage=p;renderPage();window.scrollTo({{top:200,behavior:'smooth'}})}}
-window.addEventListener('scroll',()=>{{document.getElementById('st').classList.toggle('v',window.scrollY>300)}});
-doFilter();
+function filterCards(){{const q=document.getElementById('search').value.toLowerCase();document.querySelectorAll('.card').forEach(c=>{{const t=c.querySelector('.ct').textContent.toLowerCase();c.classList.toggle('hide',q&&!t.includes(q))}})}}
+function setF(el,f){{document.querySelectorAll('.fb a').forEach(b=>b.classList.remove('on'));el.classList.add('on');return false}}
 </script>
 </body>
 </html>'''
-    return html
 
 
 def main():
-    data = load_announcements()
-    before = len(data.get("announcements", []))
-    html = generate_html(data)
-    data["announcements"] = deduplicate(data.get("announcements", []))
-    after = len(data["announcements"])
+    data = load_data()
+    articles = deduplicate(data.get("announcements", []))
+    last_update = data.get("last_update", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    # Classify
+    for a in articles:
+        a["type"] = classify(a.get("title", ""))
+    
+    total = len(articles)
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    
+    # Generate index.html (just page 1)
+    html = index_page(articles, 1, total_pages, last_update)
+    with open(os.path.join(BASE_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
     
-    print(f"✅ 页面已生成: {OUTPUT_FILE}")
-    print(f"   原始: {before} 条 → 去重后: {after} 条")
-    print(f"   最后更新: {data.get('last_update', '')}")
+    # Generate articles/{hash}.html for each article
+    os.makedirs(ARTICLES_DIR, exist_ok=True)
+    
+    # Clean old articles
+    for old in os.listdir(ARTICLES_DIR):
+        if old.endswith(".html"):
+            os.remove(os.path.join(ARTICLES_DIR, old))
+    
+    for a in articles:
+        ahtml = article_page(a, articles)
+        with open(os.path.join(ARTICLES_DIR, f'{a["hash"]}.html'), "w", encoding="utf-8") as f:
+            f.write(ahtml)
+    
+    print(f"✅ 生成完成:")
+    print(f"   index.html ({os.path.getsize(os.path.join(BASE_DIR, 'index.html')):,} bytes)")
+    print(f"   articles/ ({len(articles)} 篇)")
+    print(f"   总公告: {total}, 分页: {total_pages} 页")
+    print(f"   最后更新: {last_update}")
 
 
 if __name__ == "__main__":

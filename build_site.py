@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-从 announcements.json 生成 GitHub Pages 静态页面
+从 announcements.json 生成 GitHub Pages 静态页面 v2
+内容直接展示在页面上，不跳转外部链接
 """
 import json
 import os
+import re
 from datetime import datetime
 from collections import defaultdict
 
@@ -36,12 +38,33 @@ def group_by_source(announcements):
 
 
 def source_color(source):
-    colors = {
-        "国考": "#e74c3c",
-        "省考": "#3498db",
-        "华图": "#2ecc71",
-    }
-    return colors.get(source, "#95a5a6")
+    return {"国考": "#e74c3c", "省考": "#3498db", "华图": "#2ecc71"}.get(source, "#95a5a6")
+
+
+def format_content(content):
+    """Format content for HTML display"""
+    if not content:
+        return '<p class="no-content">暂无详细内容</p>'
+    
+    # Escape HTML
+    content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    
+    # Split into paragraphs
+    paragraphs = content.split("\n")
+    html_parts = []
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        # Detect if it's a heading-like line
+        if len(p) < 50 and (p.startswith(("一、", "二、", "三、", "四、", "五、", "六、", "七、", "八、", "九、", "十、"))):
+            html_parts.append(f'<h4>{p}</h4>')
+        elif re.match(r'^[（(][一二三四五六七八九十]+[）)]', p):
+            html_parts.append(f'<p class="sub-item">{p}</p>')
+        else:
+            html_parts.append(f'<p>{p}</p>')
+    
+    return "\n".join(html_parts) if html_parts else '<p class="no-content">暂无详细内容</p>'
 
 
 def generate_html(data):
@@ -51,10 +74,9 @@ def generate_html(data):
     
     by_date = group_by_date(announcements)
     by_source = group_by_source(announcements)
-    
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # Build source stats cards
+    # Source stats cards
     source_cards = ""
     for src, count in by_source.items():
         color = source_color(src)
@@ -64,22 +86,31 @@ def generate_html(data):
             <div class="stat-label">{src}</div>
         </div>'''
 
-    # Build announcement list by date
+    # Announcement list
     date_sections = ""
     for date, items in by_date.items():
         cards = ""
-        for item in items:
+        for idx, item in enumerate(items):
             color = source_color(item.get("source", ""))
+            content_html = format_content(item.get("content", ""))
+            content_id = f"content-{item['hash']}"
+            
             cards += f'''
-            <div class="announcement-card">
-                <div class="card-header">
-                    <span class="source-badge" style="background: {color}">{item.get("source", "")}</span>
-                    <span class="card-date">{item.get("date_found", "")[:10]}</span>
+            <div class="announcement-card" data-source="{item.get("source", "")}">
+                <div class="card-header" onclick="toggleContent('{content_id}')">
+                    <div class="card-left">
+                        <span class="source-badge" style="background: {color}">{item.get("source", "")}</span>
+                        <span class="card-title">{item.get("title", "")}</span>
+                    </div>
+                    <span class="expand-icon" id="icon-{content_id}">▼</span>
                 </div>
-                <a href="{item.get("url", "#")}" target="_blank" rel="noopener" class="card-title">{item.get("title", "")}</a>
                 <div class="card-meta">
-                    <span>📅 发现于 {item.get("date_found", "")}</span>
-                    {f'<span>📰 发布于 {item["date_pub"]}</span>' if item.get("date_pub") else ""}
+                    <span>📅 {item.get("date_found", "")[:10]}</span>
+                    {f'<span>📰 {item["date_pub"]}</span>' if item.get("date_pub") else ""}
+                    <a href="{item.get("url", "#")}" target="_blank" rel="noopener" class="original-link">原文链接 ↗</a>
+                </div>
+                <div class="card-content" id="{content_id}" style="display: none;">
+                    {content_html}
                 </div>
             </div>'''
         
@@ -101,6 +132,7 @@ def generate_html(data):
             --bg-primary: #0f1419;
             --bg-secondary: #1a1f2e;
             --bg-card: #1e2538;
+            --bg-content: #161b26;
             --text-primary: #e8eaed;
             --text-secondary: #8b95a5;
             --text-muted: #5f6b7a;
@@ -109,25 +141,17 @@ def generate_html(data):
             --accent-glow: rgba(74, 158, 255, 0.15);
         }}
 
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
-            line-height: 1.6;
+            line-height: 1.7;
             min-height: 100vh;
         }}
 
-        .container {{
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
+        .container {{ max-width: 900px; margin: 0 auto; padding: 20px; }}
 
         /* Header */
         .header {{
@@ -136,7 +160,6 @@ def generate_html(data):
             border-bottom: 1px solid var(--border);
             margin-bottom: 30px;
         }}
-
         .header h1 {{
             font-size: 28px;
             font-weight: 700;
@@ -146,50 +169,65 @@ def generate_html(data):
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }}
-
-        .header .subtitle {{
-            color: var(--text-secondary);
-            font-size: 14px;
-        }}
-
-        .header .update-info {{
-            color: var(--text-muted);
-            font-size: 12px;
-            margin-top: 8px;
-        }}
+        .header .subtitle {{ color: var(--text-secondary); font-size: 14px; }}
+        .header .update-info {{ color: var(--text-muted); font-size: 12px; margin-top: 8px; }}
 
         /* Stats */
         .stats {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
             gap: 12px;
             margin-bottom: 30px;
         }}
-
         .stat-card {{
             background: var(--bg-card);
             border-radius: 10px;
             padding: 16px;
             text-align: center;
         }}
+        .stat-number {{ font-size: 28px; font-weight: 700; color: var(--text-primary); }}
+        .stat-label {{ font-size: 13px; color: var(--text-secondary); margin-top: 4px; }}
 
-        .stat-number {{
-            font-size: 28px;
-            font-weight: 700;
+        /* Search & Filter */
+        .search-box {{
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
             color: var(--text-primary);
+            font-size: 14px;
+            margin-bottom: 16px;
+            outline: none;
+            transition: border-color 0.2s;
         }}
+        .search-box:focus {{ border-color: var(--accent); }}
+        .search-box::placeholder {{ color: var(--text-muted); }}
 
-        .stat-label {{
-            font-size: 13px;
+        .filter-bar {{
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }}
+        .filter-btn {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
             color: var(--text-secondary);
-            margin-top: 4px;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }}
+        .filter-btn:hover, .filter-btn.active {{
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
         }}
 
         /* Date groups */
-        .date-group {{
-            margin-bottom: 24px;
-        }}
-
+        .date-group {{ margin-bottom: 24px; }}
         .date-heading {{
             font-size: 16px;
             font-weight: 600;
@@ -201,7 +239,6 @@ def generate_html(data):
             align-items: center;
             gap: 8px;
         }}
-
         .date-count {{
             font-size: 12px;
             font-weight: 400;
@@ -215,24 +252,25 @@ def generate_html(data):
         .announcement-card {{
             background: var(--bg-card);
             border-radius: 10px;
-            padding: 16px;
             margin-bottom: 8px;
-            transition: all 0.2s ease;
             border: 1px solid transparent;
+            transition: all 0.2s ease;
         }}
-
         .announcement-card:hover {{
             border-color: var(--accent);
             box-shadow: 0 0 20px var(--accent-glow);
-            transform: translateY(-1px);
         }}
 
         .card-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 8px;
+            padding: 14px 16px;
+            cursor: pointer;
+            user-select: none;
         }}
+        .card-header:hover {{ background: rgba(74, 158, 255, 0.05); }}
+        .card-left {{ display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }}
 
         .source-badge {{
             font-size: 11px;
@@ -240,34 +278,71 @@ def generate_html(data):
             color: white;
             padding: 2px 10px;
             border-radius: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            white-space: nowrap;
         }}
-
-        .card-date {{
-            font-size: 12px;
-            color: var(--text-muted);
-        }}
-
         .card-title {{
-            display: block;
             font-size: 15px;
             font-weight: 500;
             color: var(--text-primary);
-            text-decoration: none;
-            line-height: 1.5;
-            margin-bottom: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
-
-        .card-title:hover {{
-            color: var(--accent);
+        .expand-icon {{
+            color: var(--text-muted);
+            font-size: 12px;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+            margin-left: 8px;
         }}
+        .expand-icon.open {{ transform: rotate(180deg); }}
 
         .card-meta {{
             display: flex;
             gap: 16px;
             font-size: 12px;
             color: var(--text-muted);
+            padding: 0 16px 12px;
+            align-items: center;
+        }}
+        .original-link {{
+            color: var(--accent);
+            text-decoration: none;
+            margin-left: auto;
+        }}
+        .original-link:hover {{ text-decoration: underline; }}
+
+        /* Content area */
+        .card-content {{
+            padding: 0 16px 16px;
+            background: var(--bg-content);
+            margin: 0 8px 8px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.8;
+            color: var(--text-secondary);
+            max-height: 500px;
+            overflow-y: auto;
+        }}
+        .card-content h4 {{
+            color: var(--text-primary);
+            font-size: 14px;
+            font-weight: 600;
+            margin: 12px 0 6px;
+        }}
+        .card-content p {{
+            margin-bottom: 8px;
+            text-indent: 0;
+        }}
+        .card-content p.sub-item {{
+            padding-left: 20px;
+            color: var(--text-secondary);
+        }}
+        .no-content {{
+            color: var(--text-muted);
+            font-style: italic;
+            text-align: center;
+            padding: 20px;
         }}
 
         /* Footer */
@@ -279,75 +354,7 @@ def generate_html(data):
             color: var(--text-muted);
             font-size: 12px;
         }}
-
-        .footer a {{
-            color: var(--accent);
-            text-decoration: none;
-        }}
-
-        /* Filter bar */
-        .filter-bar {{
-            display: flex;
-            gap: 8px;
-            margin-bottom: 24px;
-            flex-wrap: wrap;
-        }}
-
-        .filter-btn {{
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            color: var(--text-secondary);
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }}
-
-        .filter-btn:hover, .filter-btn.active {{
-            background: var(--accent);
-            color: white;
-            border-color: var(--accent);
-        }}
-
-        /* Search */
-        .search-box {{
-            width: 100%;
-            padding: 12px 16px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            color: var(--text-primary);
-            font-size: 14px;
-            margin-bottom: 20px;
-            outline: none;
-            transition: border-color 0.2s;
-        }}
-
-        .search-box:focus {{
-            border-color: var(--accent);
-        }}
-
-        .search-box::placeholder {{
-            color: var(--text-muted);
-        }}
-
-        /* Responsive */
-        @media (max-width: 600px) {{
-            .container {{
-                padding: 12px;
-            }}
-            .header h1 {{
-                font-size: 22px;
-            }}
-            .stats {{
-                grid-template-columns: repeat(2, 1fr);
-            }}
-            .card-meta {{
-                flex-direction: column;
-                gap: 4px;
-            }}
-        }}
+        .footer a {{ color: var(--accent); text-decoration: none; }}
 
         /* Scroll to top */
         .scroll-top {{
@@ -368,9 +375,14 @@ def generate_html(data):
             box-shadow: 0 4px 12px rgba(74, 158, 255, 0.3);
             z-index: 100;
         }}
+        .scroll-top.visible {{ display: flex; }}
 
-        .scroll-top.visible {{
-            display: flex;
+        @media (max-width: 600px) {{
+            .container {{ padding: 12px; }}
+            .header h1 {{ font-size: 22px; }}
+            .stats {{ grid-template-columns: repeat(2, 1fr); }}
+            .card-meta {{ flex-wrap: wrap; gap: 8px; }}
+            .card-title {{ font-size: 14px; }}
         }}
     </style>
 </head>
@@ -398,9 +410,9 @@ def generate_html(data):
 
         <div class="filter-bar">
             <button class="filter-btn active" onclick="filterSource('all', this)">全部</button>
-            <button class="filter-btn" onclick="filterSource('国考', this)" style="--accent-color: #e74c3c">🔴 国考</button>
-            <button class="filter-btn" onclick="filterSource('省考', this)" style="--accent-color: #3498db">🔵 省考</button>
-            <button class="filter-btn" onclick="filterSource('华图', this)" style="--accent-color: #2ecc71">🟢 华图</button>
+            <button class="filter-btn" onclick="filterSource('国考', this)">🔴 国考</button>
+            <button class="filter-btn" onclick="filterSource('省考', this)">🔵 省考</button>
+            <button class="filter-btn" onclick="filterSource('华图', this)">🟢 华图</button>
         </div>
 
         <div id="announcements">
@@ -416,44 +428,42 @@ def generate_html(data):
     <button class="scroll-top" id="scrollTop" onclick="window.scrollTo({{top:0,behavior:'smooth'}})">↑</button>
 
     <script>
-        // Scroll to top button
+        function toggleContent(id) {{
+            const el = document.getElementById(id);
+            const icon = document.getElementById('icon-' + id);
+            if (el.style.display === 'none') {{
+                el.style.display = 'block';
+                icon.classList.add('open');
+            }} else {{
+                el.style.display = 'none';
+                icon.classList.remove('open');
+            }}
+        }}
+
         window.addEventListener('scroll', () => {{
-            const btn = document.getElementById('scrollTop');
-            btn.classList.toggle('visible', window.scrollY > 300);
+            document.getElementById('scrollTop').classList.toggle('visible', window.scrollY > 300);
         }});
 
-        // Source filter
         function filterSource(source, btn) {{
             document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            
             document.querySelectorAll('.announcement-card').forEach(card => {{
                 const badge = card.querySelector('.source-badge');
-                if (source === 'all' || badge.textContent === source) {{
-                    card.style.display = '';
-                }} else {{
-                    card.style.display = 'none';
-                }}
+                card.style.display = (source === 'all' || badge.textContent === source) ? '' : 'none';
             }});
-            
-            // Show/hide date groups with no visible cards
             document.querySelectorAll('.date-group').forEach(group => {{
-                const visibleCards = group.querySelectorAll('.announcement-card:not([style*="display: none"])');
-                group.style.display = visibleCards.length > 0 ? '' : 'none';
+                group.style.display = group.querySelectorAll('.announcement-card:not([style*="display: none"])').length > 0 ? '' : 'none';
             }});
         }}
 
-        // Search filter
         function filterAnnouncements() {{
-            const query = document.getElementById('search').value.toLowerCase();
+            const q = document.getElementById('search').value.toLowerCase();
             document.querySelectorAll('.announcement-card').forEach(card => {{
                 const title = card.querySelector('.card-title').textContent.toLowerCase();
-                card.style.display = title.includes(query) ? '' : 'none';
+                card.style.display = title.includes(q) ? '' : 'none';
             }});
-            
             document.querySelectorAll('.date-group').forEach(group => {{
-                const visibleCards = group.querySelectorAll('.announcement-card:not([style*="display: none"])');
-                group.style.display = visibleCards.length > 0 ? '' : 'none';
+                group.style.display = group.querySelectorAll('.announcement-card:not([style*="display: none"])').length > 0 ? '' : 'none';
             }});
         }}
     </script>

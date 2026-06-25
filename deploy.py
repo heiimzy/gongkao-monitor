@@ -11,6 +11,7 @@ import os
 import re
 import sys
 from datetime import datetime
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GITHUB_REPO = "heiimzy/gongkao-monitor"
@@ -50,7 +51,7 @@ def main():
     print("📡 Step 1: 运行公告监控...")
     result = subprocess.run(
         [sys.executable, os.path.join(BASE_DIR, "gongkao_monitor.py")],
-        capture_output=True, text=True, timeout=60
+        capture_output=True, text=True, timeout=120
     )
     monitor_output = result.stdout.strip()
     has_new = bool(monitor_output)
@@ -74,12 +75,20 @@ def main():
 
     files_to_upload = [
         "index.html",
+        "rss.xml",
         "README.md",
         "gongkao_monitor.py",
         "build_site.py",
         "deploy.py",
         "data/announcements.json",
     ]
+
+    # Also upload all article pages
+    articles_dir = os.path.join(BASE_DIR, "articles")
+    if os.path.isdir(articles_dir):
+        for fname in sorted(os.listdir(articles_dir)):
+            if fname.endswith(".html"):
+                files_to_upload.append(f"articles/{fname}")
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     all_ok = True
@@ -95,6 +104,7 @@ def main():
         print(f"  {status} {rel_path}")
         if not ok:
             all_ok = False
+        time.sleep(0.3)  # Rate limit friendly
 
     if all_ok:
         print(f"\n✅ 公考页面已更新")

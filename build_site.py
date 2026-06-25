@@ -148,6 +148,7 @@ a{{color:var(--ac);text-decoration:none}}a:hover{{text-decoration:underline}}
 <span class="badge" style="background:{tc}">{t}</span>
 <span>📅 抓取于 {a.get("date_found","")[:10]}</span>
 {f'<span>📰 发布于 {a["date_pub"]}</span>' if a.get("date_pub") else ""}
+<a href="../rss.xml" target="_blank" rel="noopener">📡 RSS</a>
 <a href="{a.get("url","#")}" target="_blank" rel="noopener">原文链接 ↗</a>
 </div>
 </div>
@@ -273,7 +274,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHe
 <div class="ctn">
 <div class="hdr">
 <h1>🏛️ 公考信息监控</h1>
-<p class="sub">所有信息皆从公开渠道获取</p>
+<p class="sub">所有信息皆从公开渠道获取 <a href="rss.xml" target="_blank" style="background:#f26522;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;text-decoration:none;margin-left:6px;vertical-align:middle">📡 RSS 订阅</a></p>
 <p class="upd">最后更新：{last_update} | 每2小时自动更新</p>
 </div>
 <div class="stats">
@@ -298,8 +299,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHe
 <div id="list">{cards}</div>
 {pager}
 <div class="ft">
-<p>数据来源：<a href="https://www.offcn.com/gwy/" target="_blank">中公教育</a> · <a href="https://www.huatu.com/gwy/" target="_blank">华图教育</a></p>
-<p style="margin-top:4px">由 Hermes Agent 自动监控更新 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
+<p>由 Hermes Agent 自动监控更新 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
 </div>
 </div>
 <script>
